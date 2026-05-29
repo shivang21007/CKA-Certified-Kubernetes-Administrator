@@ -29,9 +29,10 @@ The CKA focuses on HPA, but understanding VPA helps with cluster resource effici
 5. Create an HPA targeting `load-app`:
    - Min replicas: 1
    - Max replicas: 5
-   - Target CPU utilization: 50%
-6. Generate load against the service and observe the HPA scaling up
-7. Stop the load and observe the HPA scaling back down
+   - **Target CPU utilization: 50%** (must be specified as `type: Utilization` with `averageUtilization: 50`)
+6. Verify the HPA YAML has correct structure (target type is `Utilization`, not `AverageValue`)
+7. Generate load against the service and observe the HPA scaling up
+8. Stop the load and observe the HPA scaling back down
 
 ## Hints
 
@@ -39,17 +40,33 @@ The CKA focuses on HPA, but understanding VPA helps with cluster resource effici
 <summary>Stuck? Click to reveal hints</summary>
 
 - `k top pods -n exercise-16` to check if metrics-server is working
-- `k autoscale deployment load-app --cpu-percent=50 --min=1 --max=5`
+- `k autoscale deployment load-app --cpu-percent=50 --min=1 --max=5` creates a basic HPA
+- **Verify HPA structure:** After creating the HPA, run `k get hpa -n exercise-16 -o yaml` and check that:
+  - `spec.metrics[0].type` == `Resource`
+  - `spec.metrics[0].resource.target.type` == `Utilization` (not `AverageValue`)
+  - `spec.metrics[0].resource.target.averageUtilization` == 50
 - Load generation: `k run load-gen --image=busybox:1.36 --rm -it -- sh -c "while true; do wget -q -O- http://load-svc.exercise-16; done"`
-- Scale down takes a few minutes after load stops
+- Scale down takes a few minutes after load stops (by design, to avoid flapping)
 
 </details>
 
 ## What tripped me up
 
-> HPA showed `<unknown>/50%` for CPU and never scaled. I stared at the HPA for 5 minutes thinking the metrics-server was broken. The actual problem: my Deployment didn't have `resources.requests.cpu` set. HPA calculates percentage based on *requested* CPU. No request = no baseline = `<unknown>`. Always set resource requests on pods that need autoscaling.
+> **Missing Resource Requests = Unknown Metrics**
 >
-> Scale-down is slow by default — it takes 5 minutes after load stops. During practice I thought it was broken and kept restarting the HPA. It's working, it's just conservative. Don't panic if replicas stay high for a few minutes after you stop the load generator.
+> HPA showed `<unknown>/50%` for CPU and never scaled. I stared at the HPA for 5 minutes thinking the metrics-server was broken. The actual problem: my Deployment didn't have `resources.requests.cpu` set. HPA calculates percentage based on *requested* CPU. No request = no baseline = `<unknown>`. Always set resource requests on pods that need autoscaling.
+
+> **Target Type Must Be Utilization, Not AverageValue**
+>
+> Created an HPA and it compiled, but `k get hpa` showed `<unknown>` metrics. When I checked the YAML with `k get hpa -o yaml`, I saw `target.type: AverageValue` instead of `target.type: Utilization`. The metrics-server can't compute AverageValue for CPU (that's for custom metrics). For CPU, must use type: `Utilization`. Check the imperative command's generated YAML carefully.
+
+> **Scale-Down is Deliberately Slow**
+>
+> After I stopped generating load, replicas stayed high for 5 minutes. I thought the HPA was broken and kept restarting things. It's not broken—it's conservative. By default, HPA waits 5 minutes after load drops before scaling down (to avoid flapping). Don't panic if replicas stay high briefly after stopping load.
+
+> **Metrics-Server Isn't Always Installed**
+>
+> `k top pods` returned an error. Metrics-server wasn't installed on the cluster. HPA cannot function without metrics-server (or equivalent metrics provider). On managed clusters (EKS, GKE, AKS), it's usually pre-installed. On kubeadm clusters, you have to install it manually: `k apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml`
 
 ## Verify
 
@@ -116,11 +133,36 @@ k apply -f deployment.yaml
 # Create service
 k expose deployment load-app -n exercise-16 --port=80 --target-port=80 --name=load-svc
 
-# Create HPA
+# Option 1: Create HPA imperatively
 k autoscale deployment load-app -n exercise-16 --cpu-percent=50 --min=1 --max=5
 
-# Check HPA
-k get hpa -n exercise-16
+# Option 2: Create HPA declaratively (to verify structure)
+k apply -f - <<EOF
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: load-app
+  namespace: exercise-16
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: load-app
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+EOF
+
+# Verify HPA structure
+k get hpa -n exercise-16 -o yaml
+# Check: metrics[0].resource.target.type should be "Utilization"
+# Check: metrics[0].resource.target.averageUtilization should be 50
 
 # Generate load (run in a separate terminal)
 k run load-gen -n exercise-16 --image=busybox:1.36 --rm -it -- sh -c \

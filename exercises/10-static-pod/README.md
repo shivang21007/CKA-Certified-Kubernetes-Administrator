@@ -45,11 +45,25 @@ sudo rm /etc/kubernetes/manifests/static-web.yaml
 
 ## What tripped me up
 
-> I kept running `kubectl delete pod static-web-node01` and it kept coming back 5 seconds later. I did this four times before I realized: kubelet manages static pods, not the API server. You CANNOT delete a static pod through kubectl. You have to SSH into the node and delete the manifest file from `/etc/kubernetes/manifests/`. This is one of those things that feels wrong but is correct.
+> **Static Pods Can't Be Deleted Via kubectl**
 >
-> Also forgot to check the actual `staticPodPath` on the node. Most guides say `/etc/kubernetes/manifests/` but it's configurable in the kubelet config. On the exam, always verify: `cat /var/lib/kubelet/config.yaml | grep staticPodPath`. I once put the file in the wrong directory and the pod never appeared.
+> I kept running `kubectl delete pod static-web-node01` and it kept coming back 5 seconds later. I did this four times before I realized: kubelet manages static pods, not the API server. You CANNOT delete a static pod through kubectl — you have to SSH into the node and delete the manifest file from `/etc/kubernetes/manifests/`. The kubelet immediately recreates any missing static pods. This is one of those things that feels wrong but is correct by design.
+
+> **Verify the Actual staticPodPath**
 >
-> Pro tip: always specify the namespace when creating the pod manifest (`--namespace=exercise-10`). If you create it in default, the static pod won't work properly in the exercise namespace context. Use docker exec aliases (`d exec`, `de`) to interact with containers when troubleshooting: `de <container-id> cat /etc/kubernetes/manifests/static-web.yaml`. Check the kubelet service directly: `systemctl status kubelet` and `journalctl -u kubelet` for debugging static pod issues.
+> Forgot to check the actual path on the node. Placed the manifest in the "usual" spot, but the kubelet was configured to look elsewhere. Always verify: `cat /var/lib/kubelet/config.yaml | grep staticPodPath`. Paths are configurable and exam clusters might differ from defaults. A typo in the path means the pod never appears.
+
+> **Kubelet Config Comments Can Hide Issues**
+>
+> Added a commented-out flag in the kubelet config as a reminder: `# --feature-gates=...`. Later, when examining the kubelet configuration to debug a static pod issue, I couldn't find the real value because my commented version was at the top of the file. When analyzing kubelet flags or troubleshooting, strip comments to see the actual active configuration: `grep -v "^[[:space:]]*#" /var/lib/kubelet/config.yaml`. Comments matter for reading clarity but not for what kubelet executes.
+
+> **Static Pod Names Include Node Name**
+>
+> Created a static pod named `static-web` and couldn't find it with `k get pods static-web`. Turns out the system appends the node name: if the node is `control-plane`, the pod is `static-web-control-plane`. Always search by pattern: `k get pods -A | grep static-web`.
+
+> **kubelet Needs Time to Pick Up Manifests**
+>
+> Placed the manifest and immediately ran `kubectl get pods` — pod wasn't there. Thought it was broken. Actually waited 2-3 seconds and kubelet detected it. Don't panic if the static pod isn't immediate. Give the kubelet time to scan `/etc/kubernetes/manifests/` (default scan interval is a few seconds).
 
 <details>
 <summary>Solution</summary>
