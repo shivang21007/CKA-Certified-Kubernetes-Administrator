@@ -1,10 +1,22 @@
 # Exercise 17 — kubectl debug: Pod and Node
 
-> **Medium** | ~15 min | Domain: Troubleshooting (30%)
+> **Medium** | ~15 min | Domain: Troubleshooting (30%) | **Updated May 2026**
 >
 > Related: [README — Troubleshooting](../../README.md#domain-2--troubleshooting-30)
 
 Use `kubectl debug` to troubleshoot running pods and access node-level resources. This is GA in v1.35 and directly relevant to CKA troubleshooting tasks.
+
+## Conventions
+
+Before debugging, understand the trap architecture:
+
+- **Primary Trap:** Debug container started without `--target` (isolated namespace instead of shared)
+- **Secondary Trap (Gotcha):** Node debug without `chroot /host` (sees container filesystem, not node)
+- **Validation Criteria:** Your debug session shows:
+  - Pod debug: processes from target container visible in debug pod
+  - Node debug: node filesystem mounted at `/host`, kubelet systemd status accessible
+  - Both: no errors when listing processes or checking services
+- **Scoring:** Full credit for successful debug + root cause identification. Partial for debug success alone.
 
 ## Tasks
 
@@ -41,9 +53,17 @@ Use `kubectl debug` to troubleshoot running pods and access node-level resources
 
 ## What tripped me up
 
-> I ran `k debug broken-app -it --image=busybox:1.36` without `--target=broken-app`. The debug container started, but `ps aux` only showed my busybox shell — no nginx processes. Without `--target`, the debug container gets its own process namespace. You NEED `--target=<container>` to share process namespace with the container you're debugging.
+> **Pod Debug Trap:** I ran `k debug broken-app -it --image=busybox:1.36` without `--target=broken-app`. The debug container started, but `ps aux` only showed my busybox shell — no nginx processes. Without `--target`, the debug container gets its own process namespace. You NEED `--target=<container>` to share process namespace with the container you're debugging. This is the most common k8s 1.35 gotcha: `--target` is not optional; it's the difference between isolated debugging and actual container inspection.
 >
-> For node debugging: `chroot /host` is essential. Without it, you're in the busybox container filesystem, not the real node. `systemctl status kubelet` fails because systemd isn't there. After `chroot /host`, you're in the real node root and everything works. I forgot this once and thought kubectl debug was useless for nodes.
+> **Node Debug Trap:** Node debugging without `chroot /host` leaves you in the debug pod's filesystem, not the real node. `systemctl status kubelet` fails because systemd isn't mounted. After `chroot /host`, you get full node access. Common mistake: spending 5 minutes trying to find config files that don't exist in the container root.
+>
+> **May 2026 Gotcha (Image Availability):** If you specify `--image=busybox:1.36` but the node doesn't have it cached, `kubectl debug` will pull it. On exam nodes with slow network or no direct internet access, this can timeout silently. Fallback: use `--image=ubuntu:22.04` or whatever is already cached. Check: `crictl images` on the node first.
+>
+> **Debug Container Port Forwarding Gotcha:** From inside a debug pod in the pod namespace, you can `curl localhost:80` to test the target container's port. But from node debug, `localhost` is the node, not a specific service. You need to either `curl <service-ip>` (find with `k get svc`) or `curl <pod-ip>:port` (find in target pod). Make sure you understand the network stack level you're debugging.
+>
+> **Multiple Containers Trap:** If the pod has multiple containers, `--target` specifies which ONE. If you `--target=container-a` but the pod's issue is in `container-b`, you won't see the broken process. Always verify which container the issue is in before attaching the debug pod.
+>
+> **Resource Limits on Debug Pod:** kubectl debug respects node resource limits. If a node is under resource pressure, you might not be able to spawn a debug pod. This is exam-realistic: you want to debug a problem but the cluster is too broken to create debug resources. Verify: `k describe node` for pressure conditions before failing debug as "not working."
 
 ## Verify
 

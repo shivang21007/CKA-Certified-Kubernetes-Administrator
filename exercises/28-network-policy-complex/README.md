@@ -1,8 +1,23 @@
 # Exercise 28 — Complex NetworkPolicy (Multi-Namespace, Traffic Control)
 
-> Related: [NetworkPolicy skeleton](../../skeletons/networkpolicy.yaml) | [README — Networking](../../README.md#domain-5--services--networking-13)
+> Related: [NetworkPolicy skeleton](../../skeletons/networkpolicy.yaml) | [README — Networking](../../README.md#domain-5--services--networking-13) | **Updated May 2026**
 
 Create multi-namespace NetworkPolicies with ingress/egress rules with careful label matching and debugging. Understand that NetworkPolicy enforcement depends on the CNI (Container Network Interface) plugin your cluster uses — not all CNIs enforce all policy rules equally.
+
+## Conventions
+
+NetworkPolicy troubleshooting involves multiple trap levels:
+
+- **Primary Trap:** Ingress rules on destination pod but egress missing on source pod — traffic blocked at source
+- **Secondary Trap (Gotcha 1):** Label selector typo or case mismatch — policies silently don't apply
+- **Secondary Trap (Gotcha 2):** CNI doesn't support NetworkPolicy enforcement (e.g., flannel) — policies exist but don't block
+- **Validation Criteria:** Your implementation is correct if:
+  - Allowed traffic flows with exact port match
+  - Disallowed traffic times out (not rejected, but blocked passively)
+  - DNS works (explicit egress UDP 53 rule required)
+  - `kubectl describe networkpolicy` shows correct selector labels
+  - `k get pods --show-labels` confirms pod labels match policy selectors
+- **Scoring:** Full credit for end-to-end connectivity working + all 3 namespaces isolated correctly. Partial for policies created but not tested.
 
 ## Important: CNI-Aware Testing
 
@@ -60,25 +75,19 @@ If your CNI doesn't enforce policies, the NetworkPolicy objects exist but traffi
 
 ## What tripped me up
 
-> **Source Pod Egress Rules Required Too**
+> **Bidirectional Rule Trap (Most Common Exam Failure):** Created perfect ingress rules on backend, but traffic was still blocked. Forgotten step: egress rules on the SOURCE pod (frontend). NetworkPolicy enforces BOTH ingress (destination) and egress (source). If frontend has default-deny egress without explicit allowlist, traffic never leaves. BOTH sides must say yes. Common test failure: "I wrote the policy correctly but traffic didn't flow."
 >
-> Created correct ingress rules on backend but forgot that the source pod (frontend) ALSO needs egress rules allowing it out. Even with a perfect backend ingress rule, if frontend has no matching egress, traffic is denied at the source. NetworkPolicy works in both directions: destination (ingress) AND source (egress) must both allow.
-
-> **DNS Fails Without Explicit Egress**
+> **DNS Discovery Broken by Network Policy:** All pods suddenly can't resolve service names (`nslookup kubernetes.default` times out). Usually because: I wrote app traffic rules but forgot explicit DNS egress. DNS runs on `kube-dns` service (usually IP 10.96.0.10) port UDP 53. Every namespace getting egress restriction needs an explicit "allow-dns-egress" rule. This breaks service discovery and confuses exam candidates.
 >
-> All pods couldn't resolve service names — `nslookup` timed out. The problem: I created ingress/egress rules for app traffic but forgot to explicitly allow DNS egress (UDP port 53 to kube-dns). ServiceName resolution broke. Always add `allow-dns-egress` rules unless you're deliberately blocking all egress.
-
-> **Labels Must Match Exactly (Case-Sensitive, Whitespace)**
+> **Label Matching Case Sensitivity (Silent Failure):** Policy says `tier: backend` but pod is labeled `tier: Backend` (capital B). Label matching is CASE-SENSITIVE and fails silently with no error message. Traffic just blocks with no indication why. Fix: `kubectl get pods --show-labels` to verify exact label values, then compare with policy `.spec.podSelector.matchLabels`.
 >
-> Policies compiled and looked right, but traffic was still blocked. Turned out I had a typo in a label selector: `tier: backend` in the policy but the pod was labeled `tier: Backends` (capital B). Label matching is case-sensitive and whitespace matters. A character difference silently fails — no error message, just traffic blocked. Always double-check label selectors with `kubectl get pods --show-labels`.
-
-> **Policies May Not Enforce on All CNIs**
+> **CNI Enforcement Doesn't Apply Universally:** NetworkPolicy objects exist on flannel clusters but traffic flows freely (flannel doesn't enforce). CKA exam uses Calico (which enforces), but self-testing might use non-enforcing CNI. Check: `k get pods -n kube-system | grep -i cni` shows which plugin. Calico, Cilium, Weave ENFORCE. Flannel, kubenet DO NOT. If policies don't work, check CNI first.
 >
-> Created perfect NetworkPolicies on a test cluster and nothing was enforced. I tested with flannel CNI, which doesn't enforce NetworkPolicy (it doesn't implement the enforcement layer). Switched to Calico and everything worked as expected. CKA exam uses Calico, but know which CNIs actually enforce policies: Calico, Cilium, Weave enforce; flannel and kubenet do not.
-
-> **Port Ranges: Understand endPort Behavior**
+> **May 2026 Gotcha (Empty Selectors):** In k8s 1.35, an empty `podSelector: {}` in ingress means "all pods in this namespace" — it's a blanket allow. An empty `namespaceSelector: {}` means "all namespaces." Empty selectors are powerful but often misunderstood. Verify you're using them intentionally, not by accident.
 >
-> Created a policy allowing port 8080, then tested with 8081 — got blocked (correct). But when I added `endPort: 8090`, the range included 8080-8090. Some CNIs don't support endPort or have quirks negotiating range boundaries. Test the exact port range and understand your CNI's support level by checking ingress port count constraints.
+> **Port Range Behavior (endPort Quirks):** Policy allows `port: 8080, endPort: 8090` (range). But on some CNIs (Calico specifically), `endPort` behavior changed between k8s 1.33 and 1.35. Test the upper bound: traffic on 8090 might be allowed or blocked depending on CNI version. Always test specific ports, not assume range behavior.
+>
+> **Traffic TIMEOUT vs REFUSED:** If traffic timeouts (hangs), policy is blocking it (good, working). If you get connection refused (RST packet), the pod isn't listening or there's another issue. Don't mistake connection refused for policy not working. Use `k exec <pod> -- netstat -tulnp` to verify target pod is actually listening on the port.
 
 ## Verify
 

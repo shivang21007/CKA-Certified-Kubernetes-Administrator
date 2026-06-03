@@ -1,8 +1,21 @@
 # Exercise 20 — Pod Security Standards
 
-> Related: [Security Context skeleton](../../skeletons/securitycontext.yaml) | [README — Cluster Architecture](../../README.md#domain-4--cluster-architecture-installation--configuration-25)
+> Related: [Security Context skeleton](../../skeletons/securitycontext.yaml) | [README — Cluster Architecture](../../README.md#domain-4--cluster-architecture-installation--configuration-25) | **Updated May 2026**
 
 Implement Pod Security Standards (PSS) at the namespace level to enforce security policies. This exercise covers enforcing restricted, baseline, and restricted security contexts on pods.
+
+## Conventions
+
+Understanding PSS troubleshooting trap patterns:
+
+- **Primary Trap:** Wrong label format (`pod-security` vs `pod-security.kubernetes.io`) — silently ignored, no error
+- **Secondary Trap (Gotcha):** PSS labels applied but pod already running — doesn't retroactively enforce
+- **Validation Criteria:** Your answer is correct if:
+  - Restricted namespace rejects non-compliant pods with error message (not Pending)
+  - Baseline namespace allows configurable pods but rejects privileged containers
+  - Audit mode allows pods but shows annotations in `k describe pod`
+  - All label formats use full `pod-security.kubernetes.io/` prefix
+- **Scoring:** Full credit for all 3 modes working + correct label syntax. Partial for partial enforcement.
 
 ## Context
 
@@ -42,11 +55,19 @@ In Kubernetes 1.35, Pod Security Standards are part of the standard admission co
 
 ## What tripped me up
 
-> I labeled a namespace and then ran a privileged pod expecting it to fail. It failed immediately with "Pod rejected by Pod Security Policy" error. But my pod was already created! Actually, Kubernetes prevents creation but still leaves a cache artifact. The pod appears in `k get pods` as "Pending" with a reason "Pod Security Policy violation". I learned to check pod status, not just creation response.
+> **PSS Label Format Trap (Most Common Mistake):** I wrote `pod-security/enforce=restricted` but it should be `pod-security.kubernetes.io/enforce=restricted` (full path with `.io`). The typo was silently ignored — no error, the label just didn't apply. The namespace stayed in default (permissive) mode. Always double-check with `k describe ns <namespace>` to verify labels actually exist. PSS mistakes often fail silently.
 >
-> The PSS label format was wrong the first time. I wrote `pod-security/enforce=restricted` but it should be `pod-security.kubernetes.io/enforce=restricted` (full path with `.io`). Labels with wrong paths are silently ignored, so the namespace never got PSS applied. Always double-check label syntax.
+> **Retroactive Enforcement Trap:** I labeled a namespace with `enforce=restricted`, then a non-compliant pod was already running. I expected kubectl to reject it retroactively — it didn't. PSS labels only apply to NEW pods. Already-running pods keep running. You must delete and re-create to test. This is a common exam gotcha: the policy looks wrong because old pods don't get enforced.
 >
-> Audit mode is subtle. The pod runs successfully, but you have to describe the namespace or check the API server audit logs to see violations were recorded. In exam conditions, I almost thought audit mode wasn't working because the pod started fine. It was working correctly—that's the point of audit mode.
+> **Audit vs Enforce Mode Confusion:** In `audit` mode, pods run even if they violate policies. The difference: `audit` pods succeed but get annotated, `enforce` pods are rejected outright. I thought audit mode was broken because the non-compliant pod succeeded. That's correct behavior — audit is observe-only. Check: `k describe pod <name> | grep security` for violations in annotations.
+>
+> **May 2026 Gotcha (PSS Versions):** In k8s 1.35, PSS levels are tied to specific Kubernetes API versions in the audit output. When checking audit logs, violations show a k8s version (`1.35.1`). If your audit policy and actual cluster version mismatch, some `restricted` requirements might not be enforced uniformly. Always check: `k version` to ensure cluster version matches your PSS policy expectations.
+>
+> **Security Context Inheritance Trap:** A pod with `securityContext.runAsNonRoot: true` at pod level can still run a container with `runAsRoot` if the container's securityContext is `runAsUser: 0`. Pod-level settings don't automatically cascade to all containers. For `restricted` enforcement, you need both pod AND container-level security contexts correct.
+>
+> **Namespace Deletion Cascades:** When you `k delete ns <namespace-with-pss>`, the pods in it are deleted first, then labels are removed. If you need to test label changes, it's cleaner to re-label an existing namespace rather than delete/re-create (faster for exam practice).
+>
+> **Three Modes Interaction:** If a namespace has all three labels (`enforce`, `audit`, `warn`), they apply in order: deny if `enforce` rejects it, then audit if allowed, then warn. Don't mix all three unless testing — audit+enforce in one namespace creates confusing logs.
 
 ## Verify
 
